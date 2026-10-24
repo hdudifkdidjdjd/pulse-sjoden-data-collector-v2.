@@ -81,3 +81,9 @@ jobs:
           path: historical_output/combined_races.sqlite3
           if-no-files-found: error
 
+      - name: Build combined historical race database
+        run: |
+          python v85_batch_import.py \
+            --db historical_output/combined_races.sqlite3 \
+            --glob "*_results_*_normalized.csv"
+
