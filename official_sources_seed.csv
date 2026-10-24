@@ -1,6 +1,4 @@
-kind,year,part,url,status
-annual_statistics,2001,,https://media-cdn.travsport.se/whxbf05s/aarsstatistik-2001.pdf,pdf_readable
-annual_statistics,2002,,,missing
+
 kind,year,part,url,status
 annual_statistics,2001,,https://media-cdn.travsport.se/whxbf05s/aarsstatistik-2001.pdf,pdf_readable
 annual_statistics,2002,,,missing
@@ -34,4 +32,3 @@ annual_report,2022,,https://media-cdn.travsport.se/rwqb0med/a-rsredovning-2022.p
 annual_report,2023,,https://media-cdn.travsport.se/gbekmmps/a-rsredovning-2023.pdf,index_link_unverified
 annual_report,2024,,https://media-cdn.travsport.se/q2jhhvnb/a-rsredovisning-2024.pdf,index_link_unverified
 annual_report,2025,,https://media-cdn.travsport.se/qpxcs3tj/a-rsredovning-2025.pdf,index_link_unverified
-
