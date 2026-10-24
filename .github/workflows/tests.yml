@@ -24,7 +24,7 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
-  
+
       - name: Import real Jagersro race results
         run: |
           mkdir -p historical_output
@@ -39,26 +39,39 @@ jobs:
           import sqlite3
 
           path = "historical_output/jagersro_2026-10-24.sqlite3"
+
           with sqlite3.connect(path) as db:
-              races = db.execute("SELECT COUNT(*) FROM races").fetchone()[0]
-              horses = db.execute("SELECT COUNT(*) FROM finishers").fetchone()[0]
+              races = db.execute(
+                  "SELECT COUNT(*) FROM races"
+              ).fetchone()[0]
+
+              horses = db.execute(
+                  "SELECT COUNT(*) FROM finishers"
+              ).fetchone()[0]
+
               winners = db.execute(
                   "SELECT COUNT(*) FROM finishers WHERE position='1'"
               ).fetchone()[0]
+
               shared = db.execute("""
                   SELECT COUNT(*) FROM (
-                      SELECT race_id FROM finishers
+                      SELECT race_id
+                      FROM finishers
                       WHERE position='1'
                       GROUP BY race_id
                       HAVING COUNT(*) > 1
                   )
               """).fetchone()[0]
 
-          assert (races, horses, winners, shared) == (12, 146, 14, 2), (
-              races, horses, winners, shared
-          )
+          assert (races, horses, winners, shared) == (
+              12, 146, 14, 2
+          ), (races, horses, winners, shared)
+
           print("Jagersro historical import: PASS")
-          print("12 races, 146 horses, 14 first places, 2 shared firsts")
+          print(
+              "12 races, 146 horses, "
+              "14 first places, 2 shared firsts"
+          )
           PY
 
       - name: Upload Jagersro database
@@ -72,7 +85,36 @@ jobs:
         run: |
           python v85_batch_import.py \
             --db historical_output/combined_races.sqlite3 \
-            --files jagersro_results_2026-10-24_normalized.csv
+            --glob "*_results_*_normalized.csv"
+
+      - name: Verify combined database
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          path = "historical_output/combined_races.sqlite3"
+
+          with sqlite3.connect(path) as db:
+              integrity = db.execute(
+                  "PRAGMA integrity_check"
+              ).fetchone()[0]
+
+              races = db.execute(
+                  "SELECT COUNT(*) FROM races"
+              ).fetchone()[0]
+
+              horses = db.execute(
+                  "SELECT COUNT(*) FROM finishers"
+              ).fetchone()[0]
+
+          assert integrity == "ok", integrity
+          assert races >= 12, races
+          assert horses >= 146, horses
+
+          print("Combined historical database: PASS")
+          print(f"Races: {races}")
+          print(f"Horse records: {horses}")
+          PY
 
       - name: Upload combined historical database
         uses: actions/upload-artifact@v4
@@ -80,10 +122,3 @@ jobs:
           name: combined-historical-race-database
           path: historical_output/combined_races.sqlite3
           if-no-files-found: error
-
-      - name: Build combined historical race database
-        run: |
-          python v85_batch_import.py \
-            --db historical_output/combined_races.sqlite3 \
-            --glob "*_results_*_normalized.csv"
-
