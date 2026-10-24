@@ -1,4 +1,6 @@
-
+kind,year,part,url,status
+annual_statistics,2001,,https://media-cdn.travsport.se/whxbf05s/aarsstatistik-2001.pdf,pdf_readable
+annual_statistics,2002,,,missing
 kind,year,part,url,status
 annual_statistics,2001,,https://media-cdn.travsport.se/whxbf05s/aarsstatistik-2001.pdf,pdf_readable
 annual_statistics,2002,,,missing
