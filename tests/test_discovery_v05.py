@@ -50,7 +50,7 @@ class DiscoveryV05Tests(unittest.TestCase):
                 reader=DummyReader(['nonmatching words']*14+['Årsredovisning 2018'])
         self.assertEqual(inspect_pdf_pages(reader,'annual_report',2018)[0],'document_verified')
     def test_wrong_year_not_document_verified(self):
-        self.assertEqual(inspect_pdf_pages(DummyReader(['Ãrsredovisning 2017']),'annual_report',2018)[0],'pdf_verified')
+                self.assertEqual(inspect_pdf_pages(DummyReader(['Årsredovisning 2017']),'annual_report',2018)[0],'pdf_verified')
     def test_no_text_not_document_verified(self):
         self.assertEqual(inspect_pdf_pages(DummyReader(['']),'annual_report',2018)[0],'pdf_verified')
     def test_unsafe_pdf_rejected_without_network(self):
