@@ -215,17 +215,26 @@ jobs:
             ocr_2015_result.json
           if-no-files-found: warn
 
+      
       - name: Extract historical statistics 2019
         run: |
           python extract_historical_pages.py \
             --kind annual_statistics \
             --year 2019 \
-            --pages 15
+            --pages 92
 
-      - name: Upload historical data
+      - name: Build historical SQLite database
+        run: |
+          python build_historical_database.py \
+            --input historical_output/annual_statistics_2019_pages.jsonl \
+            --database historical_output/trav_history.sqlite3 \
+            --summary historical_output/import_summary.json
+
+      - name: Upload historical database
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: historical-data-2019
+          name: historical-database-2019
           path: historical_output/
-          if-no-files-found: warn
+          if-no-files-found: error
+
