@@ -4,6 +4,9 @@ name: Discover official source URLs
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   discover:
     runs-on: ubuntu-latest
@@ -17,12 +20,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Discover PDF sources
+      - name: Install PDF reader
+        run: python -m pip install 'pypdf>=5,<7'
+
+      - name: Validate sources
+        run: python -m collector validate
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run discovery v0.4
         run: python discover_sources.py
 
-      - name: Upload discovered candidates
+      - name: Upload reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: source-candidates
-          path: sources_candidates.csv
-          if-no-files-found: error
+          name: discovery-v04-results
+          path: |
+            sources_candidates.csv
+            discovery_diagnostics.json
+          if-no-files-found: warn
