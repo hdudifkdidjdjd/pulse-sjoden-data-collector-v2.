@@ -165,7 +165,7 @@ def main():
         with seed_path.open(
             newline="", encoding="utf-8"
         ) as seed_file:
-            for row in csv.DictReader(seed_file):
+            for row in csv.DictReader(line for line in seed_file if line.strip()):
                 kind = row["kind"].strip()
                 year = int(row["year"])
                 url = row["url"].strip()
