@@ -1,411 +1,201 @@
-"""Discover and verify official PDF document links from Svensk Travsport.
+"""Review-first official Svensk Travsport PDF discovery, v0.4.
 
-This version intentionally keeps the stable collector core untouched and focuses
-on source discovery, verification, and candidate reporting.
+Never changes sources.csv. A PDF is 'pdf_verified' only if its magic bytes match;
+'document_verified' requires text extraction and matching year/type markers.
 """
 from __future__ import annotations
-
 import csv
+import html
 import json
 import re
+from collections import defaultdict
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, unquote
 from urllib.request import Request, urlopen
 
 PAGES = {
-    "annual_statistics": "https://www.travsport.se/sport/statistik/arsstatistik",
-    "annual_report": "https://www.travsport.se/svensk-travsport/organisation/arsredovisning",
+    'annual_statistics': 'https://www.travsport.se/sport/statistik/arsstatistik',
+    'annual_report': 'https://www.travsport.se/svensk-travsport/organisation/arsredovisning',
 }
-
-YEAR_RANGES = {
-    "annual_statistics": range(2001, 2020),
-    "annual_report": range(2015, 2026),
-}
-
-USER_AGENT = "PulseSjodenCollector/0.4 (+official-document-discovery)"
-KIND_KEYWORDS = {
-    "annual_statistics": [
-        "arsstatistik",
-        "aarsstatistik",
-        "annual statistics",
-        "statistik",
-    ],
-    "annual_report": [
-        "arsredovisning",
-        "aarsredovisning",
-        "annual report",
-        "redovisning",
-    ],
-}
+RANGES = {'annual_statistics': range(2001, 2020), 'annual_report': range(2015, 2026)}
+HOSTS = {'travsport.se', 'www.travsport.se', 'media-cdn.travsport.se'}
+YEAR = re.compile(r'(?<!\d)(20\d{2})(?!\d)')
+STATS = re.compile(r'(?:års|aars|ars)[\s_-]*statistik|annual[\s_-]*statistics', re.I)
+REPORT = re.compile(r'(?:års|aars|ars)[\s_-]*redov(?:isning|ning)|annual[\s_-]*report', re.I)
+PDF_URL = re.compile(r'(?:https?://|/)[^\s"\'<>\\]+?\.pdf(?:\?[^\s"\'<>\\]*)?', re.I)
+FIELDS = ['kind', 'year', 'url', 'status', 'note']
+USER_AGENT = 'PulseSjodenCollector/0.4 (official-public-document-review)'
 
 
-class LinkCollector(HTMLParser):
-    """Collect href values and their surrounding descriptive text."""
-
-    def __init__(self) -> None:
+class LinkParser(HTMLParser):
+    def __init__(self):
         super().__init__()
-        self.links: list[tuple[str, str]] = []
-        self._current_href: str | None = None
-        self._current_label: list[str] = []
+        self.links = []
+        self.active = None
 
     def handle_starttag(self, tag, attrs):
-        if tag not in {"a", "link", "source", "area", "iframe"}:
-            return
-        values = dict(attrs)
-        href = values.get("href") or values.get("src") or values.get("data-url")
-        if href:
-            self._current_href = href
-            self._current_label = []
+        attrs = dict(attrs)
+        for attr in ('href', 'src', 'data-url', 'data-href'):
+            val = attrs.get(attr)
+            if val and '.pdf' in val.lower():
+                self.links.append(('', val))
+        if tag == 'a':
+            self.active = (attrs.get('href', ''), [])
 
     def handle_data(self, data):
-        if self._current_href is not None:
-            text = data.strip()
-            if text:
-                self._current_label.append(text)
+        if self.active is not None:
+            self.active[1].append(data)
 
     def handle_endtag(self, tag):
-        if tag not in {"a", "link", "source", "area", "iframe"}:
-            return
-        if self._current_href is not None:
-            label = " ".join(" ".join(self._current_label).split())
-            self.links.append((label, self._current_href))
-            self._current_href = None
-            self._current_label = []
+        if tag == 'a' and self.active is not None:
+            url, label = self.active
+            self.links.append((' '.join(''.join(label).split()), url))
+            self.active = None
 
 
-def normalize_space(value: str) -> str:
-    return " ".join(str(value).split()).strip()
-
-
-def canonical_url(raw_url: str, base_url: str) -> str:
-    url = urljoin(base_url, raw_url.strip())
-    if not url:
-        return ""
-    split = urlsplit(url)
-    return split._replace(fragment="").geturl()
-
-
-def extract_embedded_urls(text: str) -> set[str]:
-    urls = set()
-    for candidate in re.findall(r"https?://[^\s\"'<>]+", text, flags=re.I):
-        if candidate.lower().endswith(".pdf") or "pdf" in candidate.lower():
-            urls.add(candidate)
-    return urls
-
-
-def infer_document_kind(label: str, url: str) -> str | None:
-    combined = normalize_space(f"{label} {url}").lower()
-    for kind, keywords in KIND_KEYWORDS.items():
-        if any(keyword in combined for keyword in keywords):
-            return kind
-    return None
-
-
-def infer_year(label: str, url: str, expected_years: Iterable[int]) -> int | None:
-    text = normalize_space(f"{label} {url}")
-    years = [int(match) for match in re.findall(r"(20\d{2})", text)]
-    if not years:
+def safe_url(raw, base):
+    raw = html.unescape(raw).replace('\\/', '/').replace('\\u002F', '/')
+    url = urljoin(base, raw).split('#', 1)[0]
+    parts = urlsplit(url)
+    if parts.scheme != 'https' or (parts.hostname or '').lower() not in HOSTS:
         return None
-    valid = [year for year in years if year in expected_years]
-    if valid:
-        return valid[0]
-    return Years of the year, used only for close matches
+    if parts.username or parts.password or parts.port not in (None, 443):
+        return None
+    if not unquote(parts.path).lower().endswith('.pdf'):
+        return None
+    return url
 
 
-# Compatibility wrapper: keep a clear, explicit year selection for candidate matching.
-def extract_years(value: str) -> list[int]:
-    return [int(match) for match in re.findall(r"(20\d{2})", value)]
+def classify(label, url):
+    content = unquote(label + ' ' + urlsplit(url).path)
+    years = set(map(int, YEAR.findall(content)))
+    stats, report = bool(STATS.search(content)), bool(REPORT.search(content))
+    if len(years) != 1 or stats == report:
+        return None
+    kind = 'annual_statistics' if stats else 'annual_report'
+    year = next(iter(years))
+    return (kind, year) if year in RANGES[kind] else None
 
 
-def infer_year(label: str, url: str, expected_years: Iterable[int]) -> int | None:
-    candidates = extract_years(normalize_space(f"{label} {url}"))
-    valid = [year for year in candidates if year in set(expected_years)]
-    if valid:
-        return valid[0]
-    return candidates[0] if candidates else None
+def candidates_from_html(source, base):
+    parser = LinkParser()
+    parser.feed(source)
+    decoded = html.unescape(source).replace('\\/', '/').replace('\\u002F', '/')
+    links = parser.links + [('', match.group(0)) for match in PDF_URL.finditer(decoded)]
+    result = defaultdict(set)
+    for label, raw in links:
+        url = safe_url(raw, base)
+        if url:
+            key = classify(label, url)
+            if key:
+                result[key].add(url)
+    return result
 
 
-def fetch_page(url: str) -> str:
-    request = Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
-        },
-    )
-    with urlopen(request, timeout=30) as response:
-        body = response.read(5_000_000)
-    return body.decode("utf-8", "replace")
+def request_bytes(url, limit=12_000_000):
+    req = Request(url, headers={'User-Agent': USER_AGENT})
+    with urlopen(req, timeout=25) as response:
+        data = response.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('Download exceeds safety limit')
+        return data
 
 
-def pdf_text_sample(payload: bytes) -> str:
-    sample = payload[:200_000]
+def pdf_text(data):
     try:
-        return sample.decode("latin-1", "ignore")
+        from pypdf import PdfReader
+        from io import BytesIO
+        reader = PdfReader(BytesIO(data), strict=False)
+        return ' '.join((page.extract_text() or '') for page in reader.pages[:5])
     except Exception:
-        return ""
+        return ''
 
 
-def verify_pdf_bytes(payload: bytes, expected_kind: str, expected_year: int) -> tuple[bool, str]:
-    if len(payload) < 5 or not payload.startswith(b"%PDF-"):
-        return False, "Response does not start with the PDF header signature"
-
-    text = pdf_text_sample(payload).lower()
-    year_text = str(expected_year)
-    kind_keywords = KIND_KEYWORDS[expected_kind]
-    kind_present = any(keyword in text for keyword in kind_keywords)
-    year_present = year_text in text
-
-    if not year_present:
-        return False, f"PDF content does not include the expected year {expected_year}"
-    if not kind_present:
-        return False, f"PDF content does not include the expected kind markers for {expected_kind}"
-
-    return True, f"PDF body includes matching document year {expected_year} and expected {expected_kind} markers"
-
-
-def verify_pdf_url(url: str, expected_kind: str, expected_year: int) -> tuple[bool, str]:
-    request = Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/pdf,*/*;q=0.8",
-        },
-    )
+def verify_pdf(url, kind, year):
     try:
-        with urlopen(request, timeout=30) as response:
-            payload = response.read(200_000)
-    except (HTTPError, URLError, ValueError) as exc:
-        return False, f"HTTP or network verification failed: {exc}"
-
-    if not payload or not payload.startswith(b"%PDF-"):
-        return False, "Downloaded payload is not a valid PDF file"
-
-    if response.headers.get_content_type() == "application/pdf":
-        content_type_ok = True
-    else:
-        content_type_ok = "pdf" in response.headers.get_content_type().lower() if hasattr(response.headers, "get_content_type") else False
-
-    # The PDF must also be checked for document content markers, not only the MIME type.
-    bytes_ok, bytes_msg = verify_pdf_bytes(payload, expected_kind, expected_year)
-    if not bytes_ok:
-        return False, bytes_msg
-    if content_type_ok or bytes_ok:
-        return True, "Verified by PDF bytes and year/kind markers"
-    return False, "Downloaded object was not verifiable as a valid PDF document"
+        data = request_bytes(url)
+        if not data.startswith(b'%PDF-'):
+            return 'invalid', 'Missing PDF signature'
+        text = pdf_text(data)
+        if not text.strip():
+            return 'pdf_verified', 'Valid PDF signature; text unavailable for document verification'
+        years = set(map(int, YEAR.findall(text)))
+        marker = STATS if kind == 'annual_statistics' else REPORT
+        if year in years and marker.search(text):
+            return 'document_verified', 'PDF text confirms document type and year'
+        return 'pdf_verified', 'Valid PDF; document type/year not confirmed in first five pages'
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+        return 'invalid', f'Fetch/verification failed: {type(exc).__name__}'
 
 
-def expected_pairs() -> list[tuple[str, int]]:
-    pairs: list[tuple[str, int]] = []
-    for kind, years in YEAR_RANGES.items():
-        for year in years:
-            pairs.append((kind, year))
-    return pairs
-
-
-def row_key(row: dict) -> tuple[str, int]:
-    return row["kind"], int(row["year"])
-
-
-def build_expected_rows() -> list[dict]:
-    rows = []
-    for kind, years in YEAR_RANGES.items():
-        for year in years:
-            rows.append({
-                "kind": kind,
-                "year": year,
-                "url": "",
-                "status": "missing",
-                "note": "No official PDF link found during discovery",
-            })
-    return rows
-
-
-def load_existing_sources(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    normalized = []
-    for row in rows:
-        normalized.append({
-            "kind": row.get("kind", "").strip(),
-            "year": row.get("year", "").strip(),
-            "url": row.get("url", "").strip(),
-        })
-    return normalized
-
-
-def merge_candidate_rows(existing_rows: list[dict], discovered_rows: list[dict]) -> list[dict]:
-    by_key: dict[tuple[str, int], dict] = {}
-
+def build_report(existing_rows, discovered, verification):
+    output = []
     for row in existing_rows:
-        key = (row["kind"], int(row["year"]))
-        if row.get("url"):
-            by_key[key] = {
-                "kind": row["kind"],
-                "year": int(row["year"]),
-                "url": row["url"],
-                "status": "existing",
-                "note": "Retained from sources.csv; not overwritten by discovery",
-            }
-
-    for row in discovered_rows:
-        key = (row["kind"], int(row["year"]))
-        if key in by_key:
-            continue
-        by_key[key] = row
-
-    ordered: list[dict] = []
-    for kind, year in expected_pairs():
-        if (kind, year) in by_key:
-            ordered.append(by_key[(kind, year)])
+        kind, year = row['kind'], int(row['year'])
+        key = (kind, year)
+        previous = row['url'].strip()
+        urls = set(discovered.get(key, set()))
+        if previous:
+            urls.add(previous)
+        if len(urls) > 1:
+            output.append(dict(kind=kind, year=year, url=previous, status='ambiguous', note='Multiple URLs: ' + ' | '.join(sorted(urls))))
+        elif len(urls) == 1:
+            url = next(iter(urls))
+            status, note = verification.get(url, ('unverified', 'Not checked'))
+            if previous:
+                note = 'Previously registered; ' + note
+            output.append(dict(kind=kind, year=year, url=url, status=status, note=note))
         else:
-            ordered.append({
-                "kind": kind,
-                "year": year,
-                "url": "",
-                "status": "missing",
-                "note": "No official PDF link found during discovery",
-            })
-    return ordered
+            output.append(dict(kind=kind, year=year, url='', status='missing', note='No official URL discovered'))
+    return output
 
 
-def write_candidate_csv(rows: list[dict], destination: Path) -> None:
-    with destination.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["kind", "year", "url", "status", "note"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def diagnostics_for(rows: list[dict]) -> dict:
-    fuzzy = [row for row in rows if row.get("status") in {"candidate", "verified", "ambiguous"}]
-    verified = [row for row in rows if row.get("status") == "verified"]
-    missing = [row for row in rows if row.get("status") == "missing"]
-    ambiguous = [row for row in rows if row.get("status") == "ambiguous"]
-    broken = [row for row in rows if row.get("status") == "broken"]
-
-    summary = {
-        "expected_total": 30,
-        "found_candidates": len(fuzzy),
-        "verified_documents": len(verified),
-        "missing_documents": len(missing),
-        "ambiguous_documents": len(ambiguous),
-        "broken_links": len(broken),
-        "notes": [
-            "Only official documents from Svensk Travsport are accepted.",
-            "The stable sources.csv is never overwritten by discovery.",
-            "Every accepted PDF URL is validated for content markers and expected year/kind information.",
-        ],
-    }
-    summary["annual_statistics"] = {
-        "expected": len(YEAR_RANGES["annual_statistics"]),
-        "found": len([row for row in fuzzy if row.get("kind") == "annual_statistics"]),
-        "verified": len([row for row in verified if row.get("kind") == "annual_statistics"]),
-        "missing": len([row for row in missing if row.get("kind") == "annual_statistics"]),
-        "ambiguous": len([row for row in ambiguous if row.get("kind") == "annual_statistics"]),
-    }
-    summary["annual_report"] = {
-        "expected": len(YEAR_RANGES["annual_report"]),
-        "found": len([row for row in fuzzy if row.get("kind") == "annual_report"]),
-        "verified": len([row for row in verified if row.get("kind") == "annual_report"]),
-        "missing": len([row for row in missing if row.get("kind") == "annual_report"]),
-        "ambiguous": len([row for row in ambiguous if row.get("kind") == "annual_report"]),
-    }
-    return summary
-
-
-def collect_discoveries() -> list[dict]:
-    discovered: list[dict] = []
-    seen: set[tuple[str, int, str]] = set()
-
-    for kind, page_url in PAGES.items():
-        expected_years = set(YEAR_RANGES[kind])
+def main():
+    with open('sources.csv', newline='', encoding='utf-8') as handle:
+        original = list(csv.DictReader(handle))
+    expected = {(kind, year) for kind, years in RANGES.items() for year in years}
+    if {(r['kind'], int(r['year'])) for r in original} != expected or len(original) != len(expected):
+        raise ValueError('sources.csv must have exactly the 30 expected kind/year rows')
+    discovered = defaultdict(set)
+    errors = []
+    for kind, page in PAGES.items():
         try:
-            html = fetch_page(page_url)
-        except Exception as exc:
-            discovered.append({
-                "kind": kind,
-                "year": None,
-                "url": page_url,
-                "status": "network_error",
-                "note": f"Unable to fetch official index page: {exc}",
-            })
-            continue
-
-        parser = LinkCollector()
-        parser.feed(html)
-        gathered: list[tuple[str, str]] = []
-        for label, href in parser.links:
-            if href and href.strip():
-                gathered.append((label, href))
-        for embedded in extract_embedded_urls(html):
-            gathered.append((embedded, embedded))
-
-        by_year: dict[int, list[str]] = {}
-        for label, href in gathered:
-            candidate_url = canonical_url(href, page_url)
-            if not candidate_url:
-                continue
-            split = urlsplit(candidate_url)
-            if split.scheme.lower() != "https" or not split.hostname or not split.hostname.endswith("travsport.se"):
-                continue
-            inferred_kind = infer_document_kind(label, candidate_url)
-            if inferred_kind is None:
-                continue
-            if inferred_kind != kind:
-                continue
-            year = infer_year(label, candidate_url, expected_years)
-            if year is None or year not in expected_years:
-                continue
-            by_year.setdefault(year, []).append(candidate_url)
-
-        for year, urls in sorted(by_year.items()):
-            unique_urls = list(dict.fromkeys(urls))
-            for url in unique_urls:
-                record_key = (kind, year, url)
-                if record_key in seen:
-                    continue
-                seen.add(record_key)
-                verified, reason = verify_pdf_url(url, kind, year)
-                status = "verified" if verified else "candidate"
-                if not verified:
-                    reason = f"Candidate detected but not verified: {reason}"
-                discovered.append({
-                    "kind": kind,
-                    "year": year,
-                    "url": url,
-                    "status": status,
-                    "note": reason,
-                })
-            if len(unique_urls) > 1:
-                for url in unique_urls:
-                    for row in discovered:
-                        if row["kind"] == kind and row["year"] == year and row["url"] == url:
-                            row["status"] = "ambiguous"
-                            row["note"] = "Multiple candidate URLs found for the same year; no silent override performed. Candidates: " + " | ".join(unique_urls)
-                            break
-
-    return discovered
+            content = request_bytes(page, 5_000_000).decode('utf-8', 'replace')
+            matches = candidates_from_html(content, page)
+            for key, urls in matches.items():
+                if key[0] == kind:
+                    discovered[key].update(urls)
+        except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
+            errors.append({'page': page, 'error': str(exc)})
+    urls_to_verify = set().union(*discovered.values()) if discovered else set()
+    urls_to_verify.update(r['url'].strip() for r in original if r['url'].strip())
+    verification = {}
+    url_to_key = {}
+    for key, urls in discovered.items():
+        for url in urls:
+            url_to_key.setdefault(url, key)
+    for r in original:
+        if r['url'].strip():
+            url_to_key.setdefault(r['url'].strip(), (r['kind'], int(r['year'])))
+    for url in sorted(urls_to_verify):
+        kind, year = url_to_key[url]
+        if not safe_url(url, PAGES[kind]):
+            verification[url] = ('invalid', 'Previously registered URL is not an allowed official HTTPS PDF')
+        else:
+            verification[url] = verify_pdf(url, kind, year)
+    report = build_report(original, discovered, verification)
+    with open('sources_candidates.csv', 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(report)
+    counts = {status: sum(r['status'] == status for r in report) for status in ('document_verified', 'pdf_verified', 'unverified', 'ambiguous', 'invalid', 'missing')}
+    Path('discovery_diagnostics.json').write_text(json.dumps({'version': '0.4', 'total_expected': len(report), 'counts': counts, 'page_errors': errors, 'notes': ['sources.csv unchanged', 'PDF signature alone is not document verification', 'Ambiguous URLs require manual review']}, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    print(json.dumps(counts, ensure_ascii=False))
+    if errors:
+        print('Index retrieval errors:', errors)
 
 
-def main() -> None:
-    discovered = collect_discoveries()
-    existing = load_existing_sources(Path("sources.csv"))
-    merged = merge_candidate_rows(existing, discovered)
-
-    candidate_path = Path("sources_candidates.csv")
-    write_candidate_csv(merged, candidate_path)
-
-    diagnostics_path = Path("discovery_diagnostics.json")
-    diagnostics_data = diagnostics_for(merged)
-    diagnostics_path.write_text(json.dumps(diagnostics_data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(f"Discovery complete: {len([row for row in merged if row['url']])} URLs reported; {len([row for row in merged if row['status'] == 'verified'])} verified PDFs; {len([row for row in merged if row['status'] == 'ambiguous'])} ambiguous entries")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
