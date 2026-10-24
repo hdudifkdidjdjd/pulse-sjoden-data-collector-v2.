@@ -47,7 +47,7 @@ class DiscoveryV05Tests(unittest.TestCase):
         self.assertEqual(rows[0]['status'],'document_verified')
         self.assertEqual(len(details),3)
     def test_late_page_document_found(self):
-        reader=DummyReader(['nonmatching words']*14+['Ãrsredovisning 2018'])
+                reader=DummyReader(['nonmatching words']*14+['Årsredovisning 2018'])
         self.assertEqual(inspect_pdf_pages(reader,'annual_report',2018)[0],'document_verified')
     def test_wrong_year_not_document_verified(self):
         self.assertEqual(inspect_pdf_pages(DummyReader(['Ãrsredovisning 2017']),'annual_report',2018)[0],'pdf_verified')
