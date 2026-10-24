@@ -68,3 +68,16 @@ jobs:
           path: historical_output/jagersro_2026-10-24.sqlite3
           if-no-files-found: error
 
+      - name: Build combined historical race database
+        run: |
+          python v85_batch_import.py \
+            --db historical_output/combined_races.sqlite3 \
+            --files jagersro_results_2026-10-24_normalized.csv
+
+      - name: Upload combined historical database
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-historical-race-database
+          path: historical_output/combined_races.sqlite3
+          if-no-files-found: error
+
