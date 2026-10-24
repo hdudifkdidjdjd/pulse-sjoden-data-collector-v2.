@@ -122,3 +122,48 @@ jobs:
           name: combined-historical-race-database
           path: historical_output/combined_races.sqlite3
           if-no-files-found: error
+
+      - name: Import verified Jagersro V85 divisions
+        run: |
+          python v85_division_map.py \
+            --csv jagersro_v85_division_map_2026-10-24.csv \
+            --db historical_output/v85_divisions.sqlite3
+
+      - name: Verify V85 division connections
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          race_db = "historical_output/combined_races.sqlite3"
+          map_db = "historical_output/v85_divisions.sqlite3"
+
+          with sqlite3.connect(race_db) as db:
+              db.execute("ATTACH DATABASE ? AS mapping", (map_db,))
+
+              matched = db.execute("""
+                  SELECT COUNT(*)
+                  FROM mapping.v85_division_map AS m
+                  JOIN races AS r
+                    ON r.race_date = m.date
+                   AND r.track = m.track
+                   AND r.race_number = m.race_number
+              """).fetchone()[0]
+
+              divisions = db.execute("""
+                  SELECT COUNT(*)
+                  FROM mapping.v85_division_map
+              """).fetchone()[0]
+
+          assert divisions == 8, divisions
+          assert matched == 8, matched
+
+          print("V85 division mapping: PASS")
+          print("8 of 8 divisions matched to race results")
+          PY
+
+      - name: Upload verified V85 division map
+        uses: actions/upload-artifact@v4
+        with:
+          name: jagersro-v85-division-map
+          path: historical_output/v85_divisions.sqlite3
+          if-no-files-found: error
