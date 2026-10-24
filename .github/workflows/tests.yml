@@ -25,3 +25,46 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
   
+      - name: Import real Jagersro race results
+        run: |
+          mkdir -p historical_output
+          python v85_historical_results.py \
+            --csv jagersro_results_2026-10-24_normalized.csv \
+            --db historical_output/jagersro_2026-10-24.sqlite3 \
+            --source-label "Jagersro 2026-10-24 supplied export"
+
+      - name: Verify Jagersro database
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          path = "historical_output/jagersro_2026-10-24.sqlite3"
+          with sqlite3.connect(path) as db:
+              races = db.execute("SELECT COUNT(*) FROM races").fetchone()[0]
+              horses = db.execute("SELECT COUNT(*) FROM finishers").fetchone()[0]
+              winners = db.execute(
+                  "SELECT COUNT(*) FROM finishers WHERE position='1'"
+              ).fetchone()[0]
+              shared = db.execute("""
+                  SELECT COUNT(*) FROM (
+                      SELECT race_id FROM finishers
+                      WHERE position='1'
+                      GROUP BY race_id
+                      HAVING COUNT(*) > 1
+                  )
+              """).fetchone()[0]
+
+          assert (races, horses, winners, shared) == (12, 146, 14, 2), (
+              races, horses, winners, shared
+          )
+          print("Jagersro historical import: PASS")
+          print("12 races, 146 horses, 14 first places, 2 shared firsts")
+          PY
+
+      - name: Upload Jagersro database
+        uses: actions/upload-artifact@v4
+        with:
+          name: jagersro-historical-database
+          path: historical_output/jagersro_2026-10-24.sqlite3
+          if-no-files-found: error
+
