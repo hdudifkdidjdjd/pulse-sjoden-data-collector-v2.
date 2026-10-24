@@ -10,7 +10,7 @@ permissions:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
@@ -33,13 +33,184 @@ jobs:
       - name: Run discovery v0.5
         run: python discover_sources.py
 
-      - name: Upload discovery reports
+      - name: Install OCR tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            poppler-utils \
+            tesseract-ocr \
+            tesseract-ocr-swe \
+            tesseract-ocr-eng
+
+      - name: Verify annual report 2015 with OCR
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          from urllib.request import Request, urlopen
+
+          URL = (
+              "https://media-cdn.travsport.se/"
+              "st3ltuga/aarsredovisning-2015.pdf"
+          )
+          LIMIT = 65_000_000
+          result = {
+              "year": 2015,
+              "kind": "annual_report",
+              "url": URL,
+              "status": "needs_manual_review",
+              "pages_checked": [],
+              "evidence": "",
+              "error": None,
+          }
+
+          try:
+              with tempfile.TemporaryDirectory() as folder:
+                  folder = Path(folder)
+                  pdf = folder / "annual_report_2015.pdf"
+
+                  req = Request(
+                      URL,
+                      headers={
+                          "User-Agent": "PulseSjodenOCR/0.1"
+                      },
+                  )
+
+                  size = 0
+                  with urlopen(req, timeout=45) as response:
+                      final = urlsplit(response.geturl())
+                      if (
+                          final.scheme != "https"
+                          or final.hostname not in {
+                              "media-cdn.travsport.se",
+                              "www.travsport.se",
+                              "travsport.se",
+                          }
+                      ):
+                          raise ValueError("Unapproved redirect")
+
+                      with pdf.open("wb") as output:
+                          while True:
+                              chunk = response.read(262144)
+                              if not chunk:
+                                  break
+                              size += len(chunk)
+                              if size > LIMIT:
+                                  raise ValueError("PDF too large")
+                              output.write(chunk)
+
+                  with pdf.open("rb") as stream:
+                      if stream.read(5) != b"%PDF-":
+                          raise ValueError("Invalid PDF signature")
+
+                  info = subprocess.run(
+                      ["pdfinfo", str(pdf)],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                      timeout=30,
+                  )
+                  match = re.search(
+                      r"^Pages:\s+(\d+)",
+                      info.stdout,
+                      re.MULTILINE,
+                  )
+                  if not match:
+                      raise ValueError("Unknown page count")
+
+                  total = int(match.group(1))
+                  if total < 1:
+                      raise ValueError("Empty PDF")
+
+                  pages = sorted(
+                      set(range(1, min(total, 12) + 1))
+                      | set(range(max(1, total - 3), total + 1))
+                  )
+
+                  for page in pages:
+                      prefix = folder / f"page_{page}"
+                      subprocess.run(
+                          [
+                              "pdftoppm",
+                              "-f", str(page),
+                              "-l", str(page),
+                              "-singlefile",
+                              "-scale-to", "1800",
+                              "-png",
+                              str(pdf),
+                              str(prefix),
+                          ],
+                          check=True,
+                          capture_output=True,
+                          timeout=90,
+                      )
+
+                      picture = str(prefix) + ".png"
+                      ocr = subprocess.run(
+                          [
+                              "tesseract",
+                              picture,
+                              "stdout",
+                              "-l", "swe+eng",
+                          ],
+                          check=True,
+                          capture_output=True,
+                          text=True,
+                          timeout=90,
+                      )
+
+                      text = ocr.stdout
+                      result["pages_checked"].append(page)
+
+                      has_year = bool(
+                          re.search(r"(?<!\d)2015(?!\d)", text)
+                      )
+                      has_type = bool(
+                          re.search(
+                              r"(års|ars|aars)\s*redovisning",
+                              text,
+                              re.IGNORECASE,
+                          )
+                      )
+
+                      if has_year and has_type:
+                          result["status"] = "ocr_document_verified"
+                          result["evidence"] = (
+                              "Year 2015 and annual-report "
+                              f"marker matched on page {page}"
+                          )
+                          break
+
+          except Exception as exc:
+              result["error"] = (
+                  f"{type(exc).__name__}: {str(exc)[:250]}"
+              )
+
+          Path("ocr_2015_result.json").write_text(
+              json.dumps(
+                  result,
+                  ensure_ascii=False,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
+
+          print(json.dumps(result, ensure_ascii=False))
+          PY
+
+      - name: Upload discovery and OCR reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: discovery-v05-results
+          name: discovery-v05-ocr-results
           path: |
             sources_candidates.csv
             discovery_document_details.csv
             discovery_diagnostics.json
-          if-no-files-found: error
+            ocr_2015_result.json
+          if-no-files-found: warn
