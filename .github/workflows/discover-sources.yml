@@ -214,3 +214,18 @@ jobs:
             discovery_diagnostics.json
             ocr_2015_result.json
           if-no-files-found: warn
+
+      - name: Extract historical statistics 2019
+        run: |
+          python extract_historical_pages.py \
+            --kind annual_statistics \
+            --year 2019 \
+            --pages 15
+
+      - name: Upload historical data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-data-2019
+          path: historical_output/
+          if-no-files-found: warn
