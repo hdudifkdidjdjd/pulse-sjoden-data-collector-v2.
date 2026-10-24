@@ -160,6 +160,25 @@ def main():
         raise ValueError('sources.csv must have exactly the 30 expected kind/year rows')
     discovered = defaultdict(set)
     errors = []
+    seed_path = Path("official_sources_seed.csv")
+    if seed_path.exists():
+        with seed_path.open(
+            newline="", encoding="utf-8"
+        ) as seed_file:
+            for row in csv.DictReader(seed_file):
+                kind = row["kind"].strip()
+                year = int(row["year"])
+                url = row["url"].strip()
+
+                if (
+                    kind in RANGES
+                    and year in RANGES[kind]
+                    and url
+                ):
+                    checked_url = safe_url(url, PAGES[kind])
+                    if checked_url:
+                        discovered[(kind, year)].add(checked_url)
+
     for kind, page in PAGES.items():
         try:
             content = request_bytes(page, 5_000_000).decode('utf-8', 'replace')
